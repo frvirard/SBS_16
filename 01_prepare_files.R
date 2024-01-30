@@ -36,16 +36,16 @@ if(!file.exists(file.path(maf_dr, maf_file))){
   message("-> Building maf file ...")
   maf <- pmap_dfr(manifest, function(id, file_name, ...){
     file.path(file_dr, "tmp", dataset, id, file_name)|>
-      vroom::vroom(comment = "#", 
+      vroom::vroom(comment = "#",
                    col_types = readr::cols(.default = "c"),
                    show_col_types = FALSE)
   }, .progress = TRUE)|>
     mutate(project = dataset, .before = 1)
-  
+
   message("-> Saving maf file ...")
   vroom::vroom_write(maf, file.path(maf_dr, maf_file))
 }
- 
+
 #' create matrix ---------------------------------------------------------------
 col_select <- c(Project = "project",
                 Sample = "Tumor_Sample_Barcode",
@@ -56,11 +56,11 @@ col_select <- c(Project = "project",
                 ref = "Reference_Allele",
                 alt = "Tumor_Seq_Allele2")
 
-maf_lst <- list.files(file.path(maf_dr), 
-                      pattern = ".maf", 
+maf_lst <- list.files(file.path(maf_dr),
+                      pattern = ".maf",
                       full.names = TRUE)
 
-walk(maf_lst, signatR::sigpro_matrix, 
+walk(maf_lst, signatR::sigpro_matrix,
      matrix_path = file.path(data_dr, "sigprofiler/matrix"),
      col = col_select, clean = TRUE)
 
@@ -68,8 +68,8 @@ walk(maf_lst, signatR::sigpro_matrix,
 context_lst <- c("SBS96", "SBS288", "SBS384", "SBS1536")
 walk(context_lst, function(c){
   set_lst <- dir(file.path(data_dr, "sigprofiler/matrix"))|>
-    map(signatR::sigpro_extract, context = c, 
-        solution_fit = TRUE, 
+    map(signatR::sigpro_extract, context = c,
+        solution_fit = TRUE,
         compatibility = TRUE,
         sigpro_path = file.path(data_dr, "sigprofiler"))
 })
