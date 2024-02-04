@@ -15,6 +15,7 @@ remotes::install_github("frvirard/signatR", auth_token = token)
 remotes::install_github("frvirard/datascrapR", auth_token = token)
 
 maf_dr <- file.path(data_dr, "maf")
+expr_dr <- file.path(data_dr, "expr")
 
 ### Download TCGA-LIHC from GDC ------------------------------------------------
 #' I downloaded expression and mutations files from GDC (20240128)
@@ -44,7 +45,7 @@ if(!file.exists(file.path(maf_dr, maf_file))){
   vroom::vroom_write(maf, file.path(maf_dr, maf_file))
 }
 
-# create matrix ----------------------------------------------------------------
+#' create matrix ---------------------------------------------------------------
 col_select <- c(Project = "project",
                 Sample = "Tumor_Sample_Barcode",
                 Genome = "NCBI_Build",
@@ -167,3 +168,34 @@ walk(context_lst, function(c){
         sigpro_path = file.path(data_dr, "sigprofiler"))
 })
 
+#' download expression files ---------------------------------------------------
+#' expression files were downloaded from GDC 20230128
+#' need to aggregate tumoral and tumoral expr for differential exp
+dataset_lst <- c("TCGA-LIHC")
+dataset <- "TCGA-LIHC"
+manifest <- datascrapR::gdc_download(project = dataset,
+                                     file_cat = "Transcriptome Profiling",
+                                     feature_type = "Gene Expression Quantification",
+                                     sample_type = "Primary Tumor",
+                                     cache = file.path(file_dr, "tmp"),
+                                     download = TRUE)
+
+#' build expression file -------------------------------------------------------
+#' need to add sample id and sample type
+expr_file <- paste0(dataset, "_", manifest|>
+                     pull(type)|>
+                     unique(), ".tsv")
+
+if(!file.exists(file.path(expr_dr, expr_file))){
+  message("-> Building expression file ...")
+  expr <- pmap_dfr(manifest, function(id, file_name, ...){
+    file.path(file_dr, "tmp", dataset, id, file_name)|>
+      vroom::vroom(comment = "#",
+                   col_types = readr::cols(.default = "c"),
+                   show_col_types = FALSE)
+  }, .progress = TRUE)|>
+    mutate(project = dataset, .before = 1)
+
+  message("-> Saving tsv file ...")
+  vroom::vroom_write(expr, file.path(expr_dr, expr_file))
+}
