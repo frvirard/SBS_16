@@ -16,9 +16,8 @@ remotes::install_github("frvirard/datascrapR", auth_token = token)
 
 maf_dr <- file.path(data_dr, "maf")
 
-### Download files from GDC ----------------------------------------------------
-#' I downloaded expression and mutations files from GDC
-dataset_lst <- c("TCGA-LIHC")
+### Download TCGA-LIHC from GDC ------------------------------------------------
+#' I downloaded expression and mutations files from GDC (20240128)
 dataset <- "TCGA-LIHC"
 manifest <- datascrapR::gdc_download(project = dataset,
                                      file_cat = "Simple Nucleotide Variation",
@@ -29,7 +28,7 @@ manifest <- datascrapR::gdc_download(project = dataset,
 #' create maf ------------------------------------------------------------------
 maf_file <- paste0(dataset, "_", manifest|>
                      pull(type)|>
-                     unique(), ".maf")
+                     unique(), ".maf.gz")
 
 if(!file.exists(file.path(maf_dr, maf_file))){
   message("-> Building maf file ...")
@@ -55,15 +54,110 @@ col_select <- c(Project = "project",
                 ref = "Reference_Allele",
                 alt = "Tumor_Seq_Allele2")
 
-maf_lst <- list.files(file.path(maf_dr),
-                      pattern = ".maf",
-                      full.names = TRUE)
-
-walk(maf_lst, signatR::sigpro_matrix,
+list.files(file.path(maf_dr),
+                      pattern = ".maf.gz",
+                      full.names = TRUE)|>
+  str_subset("TCGA-LIHC")|>
+  walk(signatR::sigpro_matrix,
      matrix_path = file.path(data_dr, "sigprofiler/matrix"),
      col = col_select, clean = TRUE)
 
-# extract signatures -----------------------------------------------------------
+### LICA-FR and LIRI-JP from ICGC ----------------------------------------------
+#' release 28 (downloaded 20240202)
+#' warning a correction in November 26, 2019 was uploaded on ICGC for
+#' LICA-FR expression files
+dataset_lst <- c("LICA-FR", "LIRI-JP")
+
+walk(dataset_lst, function(dataset){
+  message("oo Processing ", dataset)
+  vroom::vroom(file.path(file_dr, dataset,
+                         paste0("simple_somatic_mutation.open.", dataset, ".tsv.gz")),
+               show_col_types = FALSE)|>
+    vroom::vroom_write(file.path(data_dr, "maf",
+                                 paste0("simple_somatic_mutation.open.", dataset, ".maf.gz")))
+  message("Done")
+})
+
+# All set ----------------------------------------------------------------------
+dataset_lst <- c("LICA-FR", "LIRI-JP", "TCGA-LIHC")
+col_names <- c("Project", "Sample", "Genome", "chrom", "pos_start", "pos_end", "ref", "alt")
+tcga_col <- c("project",
+              "Tumor_Sample_Barcode",
+              "NCBI_Build",
+              "Chromosome",
+              "Start_Position",
+              "End_Position",
+              "Reference_Allele",
+              "Tumor_Seq_Allele2")
+
+icgc_col <- c("project_code",
+              "icgc_sample_id",
+              "assembly_version",
+              "chromosome",
+              "chromosome_start",
+              "chromosome_end",
+              "mutated_from_allele",
+              "mutated_to_allele")
+
+rename_lst <- list('TCGA-LIHC' = tcga_col,
+                   'LICA-FR' = icgc_col,
+                   'LIRI-JP' = icgc_col)
+
+rename_lst <- map(rename_lst, function(x){
+  names(x) <- col_names
+  return(x)
+})
+
+output <- file.path(data_dr, "maf",
+                    paste0("simple_somatic_mutation.",
+                           paste0(dataset_lst, collapse = "_"),
+                           ".maf.gz"))
+if(!file.exists(output)){
+  map_dfr(dataset_lst, function(dataset){
+    message("oo Processing ", dataset)
+    dt <- list.files(file.path(maf_dr),
+               pattern = ".maf.gz",
+               full.names = TRUE)|>
+      str_subset(dataset)|>
+      vroom::vroom(show_col_types = FALSE,
+                   col_types = readr::cols(.default = "c"),
+                   col_select = rename_lst[[dataset]])
+
+    if(dataset == "TCGA-LIHC"){
+      # liftover ---------------------------------------------------------------------
+      message("converting to GRCh37 genome ...")
+      chain <- rtracklayer::import.chain(file.path(file_dr,"hg38ToHg19.over.chain"))
+
+      dt <- dt |>
+        GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns = TRUE,
+                                                 seqnames.field = "chrom",
+                                                 start.field="pos_start",
+                                                 end.field = "pos_end",
+                                                 strand.field = "Strand")|>
+        rtracklayer::liftOver(chain)|>
+        as_tibble()|>
+        mutate(across(everything(), as.character))|>
+        mutate(Genome = "GRCh37")|>
+        select(-c(group, group_name, width, strand))|>
+        rename(chrom = seqnames, pos_start = start, pos_end = end)
+
+      message("done")
+    }
+    return(dt)
+  })|>
+    readr::type_convert()|>
+    vroom::vroom_write(output)
+}else{
+  message(output, " already exists, skipping")
+}
+
+# create matrix ----------------------------------------------------------------
+names(col_names) <- col_names
+signatR::sigpro_matrix(output,
+                       matrix_path = file.path(data_dr, "sigprofiler/matrix"),
+                       col = col_names, clean = TRUE)
+
+### extract signatures ---------------------------------------------------------
 context_lst <- c("SBS96", "SBS288", "SBS384", "SBS1536")
 walk(context_lst, function(c){
   set_lst <- dir(file.path(data_dr, "sigprofiler/matrix"))|>
