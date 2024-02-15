@@ -184,18 +184,45 @@ manifest <- datascrapR::gdc_download(project = dataset,
 #' need to add sample id and sample type
 expr_file <- paste0(dataset, "_", manifest|>
                      pull(type)|>
-                     unique(), ".tsv")
+                     unique(), ".tsv.gz")
 
 if(!file.exists(file.path(expr_dr, expr_file))){
   message("-> Building expression file ...")
-  expr <- pmap_dfr(manifest, function(id, file_name, ...){
+  expr <- pmap_dfr(manifest, function(id, file_name, submitter_id, ...){
     file.path(file_dr, "tmp", dataset, id, file_name)|>
       vroom::vroom(comment = "#",
                    col_types = readr::cols(.default = "c"),
-                   show_col_types = FALSE)
+                   show_col_types = FALSE)|>
+      mutate(sample = submitter_id)
   }, .progress = TRUE)|>
     mutate(project = dataset, .before = 1)
 
   message("-> Saving tsv file ...")
   vroom::vroom_write(expr, file.path(expr_dr, expr_file))
 }
+
+#' get cohort sample ID --------------------------------------------------------
+#' patient>sample>aliquot
+LIHC_sample <- datascrapR::gdc_clinical("TCGA-LIHC")|>
+  select(project = project_id,
+         patient = submitter_id,
+         sample = samples_submitter_id,
+         aliquots = aliquots_submitter_id)
+
+LIRI_sample <- vroom::vroom(file.path(file_dr, "LIRI-JP", "sample.LIRI-JP.tsv.gz"),
+                            show_col_types = FALSE)|>
+  select(project = project_code,
+         patient = icgc_donor_id,
+         sample = icgc_sample_id,
+         aliquots = icgc_specimen_id)
+
+LICA_sample <- vroom::vroom(file.path(file_dr, "LICA-FR", "sample.LICA-FR.tsv.gz"),
+                            show_col_types = FALSE)|>
+  select(project = project_code,
+         patient = icgc_donor_id,
+         sample = icgc_sample_id,
+         aliquots = icgc_specimen_id)
+
+biospecimen_id <- rbind(LIHC_sample, LIRI_sample, LICA_sample)
+
+vroom::vroom_write(biospecimen_id, file.path(data_dr, "biospecimen_id.txt"))
