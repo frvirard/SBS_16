@@ -1,0 +1,304 @@
+---
+title: "differential expression"
+format: html
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+source("config.R")
+devtools::install_github("frvirard/signatR", auth_token = token)
+devtools::install_github("frvirard/phenotypeR", auth_token = token)   
+
+# library ######################################################################
+lib_lst <- c("dplyr",
+             "tibble",
+             "tidyr",
+             "purrr",
+             "stringr",
+             "ggplot2",
+             "ComplexHeatmap")
+
+invisible(purrr::walk(lib_lst, library, character.only = TRUE))
+rm(lib_lst)
+
+# functions ####################################################################
+
+# variable #####################################################################
+gene_info <- annotables::grch37
+biospecimen_id <- vroom::vroom(file.path(data_dr, "biospecimen_id.txt"),
+                               show_col_types = FALSE) 
+sbs16_pos <- vroom::vroom(file.path(data_dr, "sbs16_pos.tsv"),
+                               show_col_types = FALSE) 
+```
+
+## Liver
+The GDC RNA-Seq workflow generates STAR counts in three different modes: unstranded, stranded_first, and stranded_second. The GDC then uses the unstranded counts as the major output for following-up FPKM and TPM normalizations to facilitate cross-project comparisons of different strandness. 
+I used the unstranded count for expression.
+
+Both LICA ans LIHC were using ENSEMBL ID to annotate genes :
+ENSEMBL ID :
+The third part is a one- or two-letter object type. For example E for exon, FM for protein family, G for gene, GT for gene tree, P for protein, R for regulatory feature and T for transcript.
+last number after the dot designate the gene version
+
+I removed gene version for compatibility between the two projects.
+
+LIRI datatable was using SYMBOL annotation instead of ENSEMBL.
+I converted everything to SYMBOL using annotables.
+
+```{r import, eval=FALSE}
+lica_exp <- vroom::vroom(file.path(file_dr, "LICA-FR","exp_seq.LICA-FR_corrected.tsv.gz"),
+                         col_select = c(sample = icgc_sample_id, 
+                                        ensgene = gene_id, 
+                                        count = raw_read_count),
+                         show_col_types = FALSE)|>
+  mutate(project = "LICA-FR")|>
+  mutate(ensgene = str_remove(ensgene, "\\..+"))|>
+  left_join(gene_info, by = join_by(ensgene))|>
+  select(project, sample, symbol, count)
+
+liri_exp <- vroom::vroom(file.path(file_dr, "LIRI-JP","exp_seq.LIRI-JP.tsv.gz"),
+                         col_select = c(sample = icgc_sample_id,
+                                        symbol = gene_id,
+                                        count = raw_read_count),
+                         show_col_types = FALSE)|>
+  mutate(project = "LIRI-JP", .before = sample)
+
+remove <- c("N_unmapped", "N_multimapping", "N_noFeature", "N_ambiguous")
+lihc_exp <- vroom::vroom(file.path(data_dr, "expr", "TCGA-LIHC_gene_expression.tsv.gz"),
+                         col_select = c(sample, 
+                                        ensgene = gene_id, 
+                                        count = unstranded,
+                                        project),
+                         show_col_types = FALSE)|>
+  filter(!ensgene %in% remove)|>
+  mutate(ensgene = str_remove(ensgene, "\\..+"))|>
+  left_join(gene_info, by = join_by(ensgene))|>
+  select(-ensgene)|>
+  select(project, sample, symbol, count)
+
+liri_exp$count[is.na(as.integer(liri_exp$count))]
+```
+
+I only kept symbols that were common to all project.
+
+```{r common genes, eval=FALSE}
+dt_exp <- rbind(lica_exp, liri_exp, lihc_exp)
+
+common_gene <- dt_exp |>
+  summarise(project, symbol)|>
+  distinct()|>
+  count(symbol)|>
+  filter(n == 3)|>
+  pull(symbol)
+  
+dt_exp <- dt_exp|>
+  filter(symbol %in% common_gene)
+```
+
+
+```{r eval=FALSE}
+dt_exp |>
+  ggplot(aes(sample, count, fill = project))+
+  geom_boxplot()+
+  scale_y_continuous(trans = "log10")
+```
+
+some genes where detected more than once (probably due to the ENSEMBL/SYMBOL conversion)
+```{r eval=FALSE}
+redundant = dt_exp|>
+  count(project, symbol, sample)|>
+  filter(n > 1)
+```
+
+sample were aliquots for TCGA. I converted them to sample
+```{r create expression matrix, eval=FALSE}
+exp_mat <- dt_exp|> 
+  mutate(sample = if_else(str_detect(sample, "TCGA"), str_sub(sample, 1,16), sample))|>
+  summarise(count = mean(count), .by = c(sample, symbol))|>
+  pivot_wider(names_from = sample, values_from = count, values_fill = 0)
+
+output <- file.path(data_dr, "expr", "LICA_LIRI_LIHC_exp_matrix.tsv.gz")
+if(!file.exists(output)){
+  exp_mat |>
+    readr::write_csv(output)
+}
+```
+
+some donors don't have mutation and expression. 
+Consequently, I had to remove some samples without SBS16 status
+
+63 samples without SBS16 status. Need to investigate this.
+
+ALB were too high for 2 samples (2318302360 and 2912266582) to be converted to integer.
+This conversion was needed by DeSeq2
+```{r remove unknown SBS16 status}
+exp_mat <- vroom::vroom(file.path(data_dr, "expr", "LICA_LIRI_LIHC_exp_matrix.tsv.gz"),
+             show_col_types = FALSE)|>
+  filter(symbol != "ALB")|>
+  column_to_rownames("symbol")
+
+# get patient positive for SBS16 -----------------------------------------------
+sbs16 <- vroom::vroom("data/sbs16_pos.tsv", 
+                      show_col_types = FALSE)|>
+  # select(patient, SBS16)|>
+  # distinct()
+
+  group_by(patient, SBS16)|>
+  summarise(count = mean(count))
+
+# remove sample without SBS16 status -------------------------------------------
+coldata <- tibble(sample = colnames(exp_mat))|>
+  left_join(biospecimen_id)|>
+  select(sample, patient)|>
+  distinct()|>
+  left_join(sbs16)
+
+coldata|>
+  filter(is.na(SBS16))
+
+coldata <- coldata|>
+  filter(!is.na(SBS16))
+```
+
+some expression value were not integer. I rounded data to use DESeq.
+Need to investigate this
+
+```{r create deseq obj, eval=FALSE}
+exp_mat <- exp_mat[,coldata$sample]
+
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = round(exp_mat),
+                              colData = coldata,
+                              design = ~ SBS16)
+```
+
+```{r normalize, eval=FALSE}
+keep <- rowSums(DESeq2::counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds <- DESeq2::DESeq(dds)
+
+saveRDS(dds, file.path(data_dr, "expr", "norm_deseq_obj.RDS"))
+```
+
+```{r save normalized matrix, eval=FALSE}
+exp_norm <- DESeq2::counts(dds, normalized=TRUE) %>%
+  as.data.frame()
+
+exp_norm|>
+  rownames_to_column("symbol")|>
+  readr::write_csv(file.path(data_dr, "expr","TCGA-LIHC_gene_expression_norm.tsv.gz"))
+```
+
+```{r get DEG}
+dds <- readRDS(file.path(data_dr, "expr", "norm_deseq_obj.RDS"))
+deg <- DESeq2::results(dds, contrast = c("SBS16", "yes", "no"))|>
+        as.data.frame()|>
+        rownames_to_column("gene")
+
+deg_sig <- deg |>
+  mutate(significant = case_when(log2FoldChange > 2 & padj < 0.001 ~ "yes",
+                                 log2FoldChange < -2 & padj < 0.001 ~ "yes",
+                                 .default = "no"))|>
+  filter(significant == "yes")
+```
+
+add SBS16 mutation count !!!!!
+```{r heatmap}
+exp_norm <-   readr::read_csv(file.path(data_dr, "expr","TCGA-LIHC_gene_expression_norm.tsv.gz"))|>
+    column_to_rownames("symbol")
+
+deg_gene <- deg_sig|>
+  pull(gene)
+
+mark_label <- c(deg_gene[str_detect(deg_gene, "UGT")], "CYP26A1")
+mark_pos <- c(which(str_detect(deg_gene, "UGT")),which(deg_gene == "CYP26A1"))
+
+#ht_pal = circlize::colorRamp2(c(-4, 0, 4), c("navy", "white", "red"))
+
+ht_pal <- circlize::colorRamp2(c(-2, 0, 2), c("#377EB8", "white", "#E41A1C"))
+row_anno <- rowAnnotation(foo = anno_mark(at = mark_pos,
+                                   labels = mark_label,
+                                   which = "row"))
+col_anno <- columnAnnotation(count = anno_barplot(coldata$count,
+                                                  gp=gpar(col = NA, fill = "grey60")),
+                             SBS16 = coldata$SBS16,
+                             col = list(SBS16 = c("yes" = "#4F9000", "no" = "grey80")),
+                             annotation_legend_param = list(SBS16 = list(nrow=1)))
+
+exp_norm[deg_gene,]|>
+  t()|>
+  scale()|>
+  t()|>
+  Heatmap(name = "fold\nchange",
+          show_row_names = FALSE,
+          show_column_names = FALSE, 
+          show_column_dend = FALSE,
+          show_row_dend = FALSE,
+          split = 2, 
+          col = ht_pal,
+          right_annotation = row_anno,
+          top_annotation = col_anno,
+          width = unit(13, "cm"),
+          height = unit(10, "cm"),
+          border = TRUE)|>
+  draw(annotation_legend_side = "bottom")
+```
+
+```{r pathways}
+up <- deg_sig|>
+  filter(log2FoldChange > 0)|>
+  pull(gene)|>
+    clusterProfiler::enrichGO(OrgDb = "org.Hs.eg.db", 
+                              ont = "BP",
+                              keyType = "SYMBOL",
+                              readable =  TRUE)|>
+    clusterProfiler::simplify()
+
+phenotypeR::enrich_bar(up, count_cutoff = 40)+
+  theme(aspect.ratio = 1.5)
+phenotypeR::enrich_web(up)
+```
+
+## Oral cancer
+```{r eval=FALSE}
+hsnc_exp <- vroom::vroom(file.path(file_dr, "gene_expression", "GDC_open_TCGA-HNSC_raw_count.tsv"),
+                    show_col_types = FALSE)
+
+exp_sample <- colnames(exp) %>%
+  str_subset("gene_id|gene_name", negate = TRUE)
+
+feature <- readRDS("data/expression/GDC_TCGA-HNSC_feature.RDS") %>%
+  filter(sample_barcode %in% exp_sample) %>%
+  filter(sample_type == "Primary Tumor") %>%
+  filter(!is.na(cluster)) %>%
+  mutate(cluster = str_remove(cluster, " &")) %>%
+  mutate(cluster = str_replace_all(cluster, " ", "_")) |>
+  mutate(NIRF = if_else(is.na(NIRF), "-", NIRF))
+
+dds <- DESeq2::DESeqDataSetFromMatrix(exp, colData = feature, design = ~ cluster)
+
+keep <- rowSums(DESeq2::counts(dds)) >= 10
+dds <- dds[keep,]
+
+dds_file <- "data/expression/dseq_obj.RDS"
+if(!file.exists(dds_file)){
+  dds <- DESeq2::DESeq(dds)
+  saveRDS(dds, dds_file)
+}else{
+  message("DESeq file already present, loading ...")
+  dds <- readRDS(dds_file)
+}
+
+normalized_counts <- DESeq2::counts(dds, normalized=TRUE)
+saveRDS(normalized_counts, "data/expression/GDC_TCGA-HNSCC_LHOC_clst_expr_deseq.RDS")
+```
+
+```{r eval=FALSE}
+dds_file <- "data/expression/dseq_obj.RDS"
+dds <- readRDS(dds_file)
+normalized_counts <- readRDS("data/expression/GDC_TCGA-HNSCC_LHOC_clst_expr_deseq.RDS")
+feature <- readRDS("data/expression/GDC_TCGA-HNSC_feature.RDS") |>
+  filter(!is.na(cluster)) |>
+  mutate(NIRF = if_else(is.na(NIRF), "-", NIRF))
+```
+
