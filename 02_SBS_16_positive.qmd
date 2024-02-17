@@ -1,0 +1,166 @@
+---
+title: "SBS16 positive"
+format: html
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+source("config.R")
+devtools::install_github("frvirard/signatR", auth_token = token)
+devtools::install_github("frvirard/datascrapR", auth_token = token)   
+
+# library ######################################################################
+lib_lst <- c("dplyr",
+             "tibble",
+             "tidyr",
+             "purrr",
+             "stringr",
+             "ggplot2")
+
+invisible(purrr::walk(lib_lst, library, character.only = TRUE))
+rm(lib_lst)
+
+# functions ####################################################################
+
+# variable #####################################################################
+biospecimen_id <- vroom::vroom(file.path(data_dr, "biospecimen_id.txt"),
+                               show_col_types = FALSE)
+```
+
+Identify SBS16 positive samples
+
+## solution selection
+I imported all stats.
+Kullback–Leibler (KL) divergence : difference between two probability distribution.
+In model monitoring, KL divergence is used to monitor production environments, specifically around feature and prediction data. KL Divergence is utilized to ensure that input or output data in production doesn’t drastically change from a baseline. The baseline can be a training production window of data or a training or validation dataset.
+
+```{r eval=FALSE}
+sol_stat <- vroom::vroom("data/sigprofiler/sign/TCGA-LIHC_masked_somatic_mutation/SBS288/All_solutions_stat.csv")|>
+  pivot_longer(-c(Signatures, "Considerable Solution", "P-value", contains("%")), 
+               names_to = "parameter", values_to = "value")|>
+  mutate(Signatures = as.integer(Signatures))
+
+sol_stat|>
+  ggplot(aes(Signatures, value, color = parameter))+
+  geom_line()
+```
+Denovo solution was at 3, however SBS16 was cleaner in solution 4
+```{r}
+map(3:5, function(sol){
+  signatR::sigpro_import_sign("TCGA-LIHC_masked_somatic_mutation", 
+                            type = "profile",
+                            analysis = "denovo", 
+                            n_sign = sol, 
+                            context = "SBS288")|>
+    signatR::plot_spectra(context = "SBS192")
+})
+```
+
+However SBS16 was scavenged by SBS5 and wasn't detected by sigprofiler.
+
+```{r}
+map_dfr(3:5, function(sol){
+  signatR::sigpro_import_sign("TCGA-LIHC_masked_somatic_mutation", 
+                            type = "activity",
+                            analysis = "cosmic", 
+                            n_sign = sol, 
+                            context = "SBS288")|>
+    pivot_longer(contains("SBS"), names_to = "signature", values_to = "count")|>
+    mutate(cluster = as.character(sol))|>
+    mutate(test = "cosmic")
+})|>
+  signatR::sign_dotplot()
+```
+
+## LICA-FR_LIRI-JP_TCGA-LIHC
+
+get cohort sample ID
+```{r}
+LIHC_sample <- datascrapR::gdc_clinical("TCGA-LIHC")|>
+  select(sample = aliquots_submitter_id, project = project_id)
+
+LIRI_sample <- vroom::vroom(file.path(file_dr, "LIRI-JP", "sample.LIRI-JP.tsv.gz"),
+                            show_col_types = FALSE)|>
+  select(sample = icgc_sample_id, project = project_code)
+LICA_sample <- vroom::vroom(file.path(file_dr, "LICA-FR", "sample.LICA-FR.tsv.gz"),
+                            show_col_types = FALSE)|>
+  select(sample = icgc_sample_id, project = project_code)
+
+sample_id <- rbind(LIHC_sample, LIRI_sample, LICA_sample)
+project <- "simple_somatic_mutation.LICA-FR_LIRI-JP_TCGA-LIHC.gz"
+```
+
+I run an new extraction, adding other cohorts.
+```{r eval = FALSE}
+sol_stat <- vroom::vroom(file.path("data/sigprofiler/sign/", project,
+                                  "SBS288/All_solutions_stat.csv"))|>
+  pivot_longer(-c(Signatures, "Considerable Solution", "P-value", contains("%")), 
+               names_to = "parameter", values_to = "value")|>
+  mutate(suggested = if_else(str_detect(Signatures, "\\*"), "yes", "no"))|>
+  mutate(signature = str_remove(Signatures, "\\*"))|>
+  mutate(Signatures = as.integer(Signatures))
+
+sol_stat|>
+  filter(parameter != "Maximum Sample KL")|>
+  ggplot(aes(Signatures, value, color = parameter))+
+    geom_line()
+```
+
+```{r fig.height=10}
+signatR::sigpro_import_sign(project, 
+                            type = "profile",
+                            analysis = "denovo", 
+                            n_sign = "suggested", 
+                            context = "SBS288")|>
+    signatR::plot_spectra(context = "SBS192")
+```
+
+```{r}
+signatR::sigpro_import_sign(project, 
+                            type = "activity",
+                            analysis = "cosmic", 
+                            n_sign = "suggested", 
+                            context = "SBS288")|>
+  pivot_longer(contains("SBS"), names_to = "signature", values_to = "count")|>
+  mutate(test = "cosmic")|>
+  left_join(sample_id)|>
+  rename(cluster = project)|>
+  signatR::sign_dotplot()
+```
+
+
+```{r}
+sbs16_pos <- signatR::sigpro_import_sign(project, 
+                            type = "activity",
+                            analysis = "denovo", 
+                            n_sign = "suggested", 
+                            context = "SBS288")|>
+  pivot_longer(-sample, names_to = "SBS16", values_to = "count")|>
+  filter(SBS16 == "SBS288H")|>
+  mutate(SBS16 = if_else(count > 0 , "yes", "no"))|>
+  left_join(biospecimen_id)|>
+  mutate(project= if_else(str_detect(sample, "TCGA"), "TCGA-LIHC", project))|>
+  mutate(aliquots = if_else(str_detect(sample, "TCGA"), sample, aliquots))|>
+  mutate(patient = if_else(str_detect(sample, "TCGA"), str_sub(sample, 1, 12), patient))|>
+  mutate(sample = if_else(str_detect(sample, "TCGA"), str_sub(sample, 1, 16), sample))
+
+vroom::vroom_write(sbs16_pos, "data/sbs16_pos.tsv")
+```
+
+```{r}
+sbs16_pos|>
+  count(SBS16, project)
+
+sbs16_pos|>
+  ggplot(aes(project, fill = SBS16))+
+  geom_bar()+
+  theme_classic()+
+  theme(axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        aspect.ratio = 1.5)+
+  scale_fill_manual(values = c("grey90","brown4"))+
+  scale_y_continuous(expand = c(0,0))+
+  ylab("nbr of sample")
+```
+
+
