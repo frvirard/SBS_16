@@ -206,30 +206,60 @@ walk(dataset_lst, function(dataset){
 
 #' get cohort sample ID --------------------------------------------------------
 #' patient>sample>aliquot
-#'
 
+## TCGA
 TCGA_sample <- map_dfr(dataset_lst, function(dataset){
   datascrapR::gdc_clinical(dataset)|>
     select(project = project_id,
            patient = submitter_id,
            sample = samples_submitter_id,
-           aliquots = aliquots_submitter_id)
+           aliquots = aliquots_submitter_id,
+           sample_type = samples_tissue_type)
 })
+
+## LIRI
+LIRI_specimen <- vroom::vroom(file.path(file_dr, "LIRI-JP", "specimen.LIRI-JP.tsv.gz"),
+                              show_col_types = FALSE,
+                              col_select = c(aliquots = icgc_specimen_id,
+                                             sample_type = specimen_type))|>
+  mutate(sample_type = case_when(str_detect(sample_type, "Normal") ~ "Normal",
+                                 str_detect(sample_type, "tumour") ~ "Tumor"))
 
 LIRI_sample <- vroom::vroom(file.path(file_dr, "LIRI-JP", "sample.LIRI-JP.tsv.gz"),
                             show_col_types = FALSE)|>
   select(project = project_code,
          patient = icgc_donor_id,
          sample = icgc_sample_id,
-         aliquots = icgc_specimen_id)
+         aliquots = icgc_specimen_id)|>
+  left_join(LIRI_specimen, join_by(aliquots))
+
+## LICA
+LICA_specimen <- vroom::vroom(file.path(file_dr, "LICA-FR", "specimen.LICA-FR.tsv.gz"),
+                              show_col_types = FALSE,
+                              col_select = c(aliquots = icgc_specimen_id,
+                                             sample_type = specimen_type))|>
+  mutate(sample_type = case_when(str_detect(sample_type, "Normal") ~ "Normal",
+                                 str_detect(sample_type, "tumour") ~ "Tumor"))
 
 LICA_sample <- vroom::vroom(file.path(file_dr, "LICA-FR", "sample.LICA-FR.tsv.gz"),
+                            col_select = c(project = project_code,
+                            patient = icgc_donor_id,
+                            sample = icgc_sample_id,
+                            aliquots = icgc_specimen_id),
                             show_col_types = FALSE)|>
-  select(project = project_code,
-         patient = icgc_donor_id,
-         sample = icgc_sample_id,
-         aliquots = icgc_specimen_id)
+  left_join(LICA_specimen, join_by(aliquots))
 
 biospecimen_id <- rbind(TCGA_sample, LIRI_sample, LICA_sample)
 
 vroom::vroom_write(biospecimen_id, file.path(data_dr, "biospecimen_id.txt"))
+
+#' get cohort clinical data ----------------------------------------------------
+patient_data <- vroom::vroom("data/files/LICA-FR/donor.LICA-FR.tsv.gz")|>
+  select(project = project_code,
+         patient = icgc_donor_id,
+         genre = donor_sex,
+         age = donor_age_at_enrollment)
+
+clinical <- vroom::vroom("data/files/LICA-FR/specimen.LICA-FR.tsv.gz")
+
+patient_data$patient |> unique()
