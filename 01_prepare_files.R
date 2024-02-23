@@ -113,6 +113,7 @@ output <- file.path(data_dr, "maf",
                     paste0("simple_somatic_mutation.",
                            paste0(dataset_lst, collapse = "_"),
                            ".maf.gz"))
+
 if(!file.exists(output)){
   map_dfr(dataset_lst, function(dataset){
     message("oo Processing ", dataset)
@@ -163,6 +164,7 @@ context_lst <- c("SBS96", "SBS288", "SBS384", "SBS1536")
 walk(context_lst, function(c){
   set_lst <- dir(file.path(data_dr, "sigprofiler/matrix"))|>
     map(signatR::sigpro_extract, context = c,
+        n_max = 20,
         solution_fit = TRUE,
         compatibility = TRUE,
         sigpro_path = file.path(data_dr, "sigprofiler"))
@@ -188,7 +190,7 @@ walk(dataset_lst, function(dataset){
                         pull(type)|>
                         unique(), ".tsv.gz")
 
-  if(!file.exists(file.path(expr_dr, expr_file))){
+  if(!file.exists(file.path(file_dr, expr_file))){
     message("-> Building expression file ...")
     expr <- pmap_dfr(manifest, function(id, file_name, submitter_id, ...){
       file.path(file_dr, "tmp", dataset, id, file_name)|>
@@ -200,7 +202,7 @@ walk(dataset_lst, function(dataset){
       mutate(project = dataset, .before = 1)
 
     message("-> Saving tsv file ...")
-    vroom::vroom_write(expr, file.path(expr_dr, expr_file))
+    vroom::vroom_write(expr, file.path(file_dr, expr_file))
   }
 })
 
@@ -213,14 +215,14 @@ TCGA_sample <- map_dfr(dataset_lst, function(dataset){
     select(project = project_id,
            patient = submitter_id,
            sample = samples_submitter_id,
-           aliquots = aliquots_submitter_id,
+           aliquot = aliquots_submitter_id,
            sample_type = samples_tissue_type)
 })
 
 ## LIRI
 LIRI_specimen <- vroom::vroom(file.path(file_dr, "LIRI-JP", "specimen.LIRI-JP.tsv.gz"),
                               show_col_types = FALSE,
-                              col_select = c(aliquots = icgc_specimen_id,
+                              col_select = c(aliquot = icgc_specimen_id,
                                              sample_type = specimen_type))|>
   mutate(sample_type = case_when(str_detect(sample_type, "Normal") ~ "Normal",
                                  str_detect(sample_type, "tumour") ~ "Tumor"))
@@ -230,13 +232,13 @@ LIRI_sample <- vroom::vroom(file.path(file_dr, "LIRI-JP", "sample.LIRI-JP.tsv.gz
   select(project = project_code,
          patient = icgc_donor_id,
          sample = icgc_sample_id,
-         aliquots = icgc_specimen_id)|>
-  left_join(LIRI_specimen, join_by(aliquots))
+         aliquot = icgc_specimen_id)|>
+  left_join(LIRI_specimen, join_by(aliquot))
 
 ## LICA
 LICA_specimen <- vroom::vroom(file.path(file_dr, "LICA-FR", "specimen.LICA-FR.tsv.gz"),
                               show_col_types = FALSE,
-                              col_select = c(aliquots = icgc_specimen_id,
+                              col_select = c(aliquot = icgc_specimen_id,
                                              sample_type = specimen_type))|>
   mutate(sample_type = case_when(str_detect(sample_type, "Normal") ~ "Normal",
                                  str_detect(sample_type, "tumour") ~ "Tumor"))
@@ -245,21 +247,83 @@ LICA_sample <- vroom::vroom(file.path(file_dr, "LICA-FR", "sample.LICA-FR.tsv.gz
                             col_select = c(project = project_code,
                             patient = icgc_donor_id,
                             sample = icgc_sample_id,
-                            aliquots = icgc_specimen_id),
+                            aliquot = icgc_specimen_id),
                             show_col_types = FALSE)|>
-  left_join(LICA_specimen, join_by(aliquots))
+  left_join(LICA_specimen, join_by(aliquot))
 
 biospecimen_id <- rbind(TCGA_sample, LIRI_sample, LICA_sample)
 
 vroom::vroom_write(biospecimen_id, file.path(data_dr, "biospecimen_id.txt"))
 
 #' get cohort clinical data ----------------------------------------------------
-patient_data <- vroom::vroom("data/files/LICA-FR/donor.LICA-FR.tsv.gz")|>
-  select(project = project_code,
-         patient = icgc_donor_id,
-         genre = donor_sex,
-         age = donor_age_at_enrollment)
 
-clinical <- vroom::vroom("data/files/LICA-FR/specimen.LICA-FR.tsv.gz")
+#' LICA-FR
+#' supplementary from
+#'  DNA Methylation Signatures Reveal the Diversity of Processes Remodeling
+#'  Hepatocellular Carcinoma Methylomes
+#' Léa Meunier, Théo Z. Hirsch, Stefano Caruso, Sandrine Imbeaud, Quentin Bayard,
+#' Amélie Roehrig, Gabrielle Couchy, Jean-Charles Nault, Josep M. Llovet,
+#' Jean-Frédéric Blanc
+#' https://doi.org/10.1002/hep.31796
+#'
+# 13 samples were absent from ICGC cohort
+LICA_specimen_id <- vroom::vroom(file.path(file_dr, "LICA-FR", "specimen.LICA-FR.tsv.gz"),
+                              show_col_types = FALSE,
+                              col_select = c(aliquot = icgc_specimen_id,
+                                             submitter_id = submitted_specimen_id))
 
-patient_data$patient |> unique()
+lica_clin <- readxl::read_xlsx(file.path(file_dr, "LICA-FR",
+                                         "hep31796-sup-0001-tables1.xlsx"), skip=1)|>
+  select(submitter_id = "Sample",
+         gender = "Gender",
+         age = "Age at sampling",
+         alcohol = "Alcohol intake",
+         HBV = "Hepatitis B",
+         HCV = "Hepatitis C",
+         tobacco = "Tobacco")|>
+  mutate(HBV = if_else(HBV == "yes", "HBV", "NB"),
+         HCV = if_else(HCV == "yes", "HCV", "NC"))|>
+  unite(virus, c(HBV, HCV))|>
+  mutate(virus = if_else(virus == "NB_NC", "NBNC", virus))|>
+  mutate(virus = str_remove(virus, "NB_|_NC"))|>
+  left_join(LICA_specimen_id)|>
+  select(-submitter_id)|>
+  relocate(aliquot, .before=1)|>
+  filter(!is.na(aliquot))
+
+#' LIRI-JP
+#' supplementary from :
+#' Whole-genome mutational landscape and characterization of noncoding and
+#' structural mutations in liver cancer
+#' Akihiro Fujimoto, Mayuko Furuta, Yasushi Totoki, Tatsuhiko Tsunoda,
+#' Mamoru Kato, Yuichi Shiraishi, Hiroko Tanaka, Hiroaki Taniguchi,
+#' Yoshiiku Kawakami, Masaki Ueno, Kunihito Gotoh, Shun-ichi Ariizumi,
+#' Christopher P Wardell, Shinya Hayami, Toru Nakamura, Hiroshi Aikata,
+#' Koji Arihiro, Keith A Boroevich, Tetsuo Abe, Kaoru Nakano,
+#' Kazuhiro Maejima, Aya Sasaki-Oku, Ayako Ohsawa, Tetsuo Shibuya, Hidewaki Nakagawa
+#'
+#' Nature Genetics volume 48, pages 500–509 (2016)
+LIRI_specimen_id <- vroom::vroom(file.path(file_dr, "LIRI-JP", "specimen.LIRI-JP.tsv.gz"),
+                                 show_col_types = FALSE,
+                                 col_select = c(aliquot = icgc_specimen_id,
+                                                submitter_id = submitted_specimen_id,
+                                                type = specimen_type))|>
+  filter(type == "Primary tumour - solid tissue")
+
+liri_clin <- readxl::read_xlsx(file.path(file_dr, "LIRI-JP",
+"03_differential_expression.xlsx"), sheet = 2, skip = 1)|>
+  select(submitter_id = "ID",
+         gender = "Gender",
+         age = "Age",
+         virus = "Virus infection",
+         alcohol = "Alcohol intakee",
+         tobacco = "Smoking")|>
+  mutate(alcohol = case_match(alcohol,
+                              "0" ~ "no",
+                             c("1", "2") ~ "yes",
+                             .default = NA))|>
+  mutate(tobacco = case_match(tobacco,
+                              "0" ~ "no",
+                              c("1", "2") ~ "yes",
+                              .default = NA))|>
+  left_join(LIRI_specimen_id)
