@@ -27,9 +27,10 @@ manifest <- datascrapR::gdc_download(project = dataset,
                                      download = TRUE)
 
 #' create maf ------------------------------------------------------------------
-maf_file <- paste0(dataset, "_", manifest|>
-                     pull(type)|>
-                     unique(), ".maf.gz")
+# maf_file <- paste0(dataset, "_", manifest|>
+#                      pull(type)|>
+#                      unique(), ".maf.gz")
+maf_file <- paste0("simple_somatic_mutation.open.", dataset, ".maf.gz")
 
 if(!file.exists(file.path(maf_dr, maf_file))){
   message("-> Building maf file ...")
