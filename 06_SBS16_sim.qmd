@@ -1,0 +1,54 @@
+---
+title: "SBS16_sim"
+format: html
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+# library ######################################################################
+lib_lst <- c("dplyr",
+             "tibble",
+             "tidyr",
+             "purrr",
+             "stringr",
+             "ggplot2",
+             "patchwork")
+
+invisible(purrr::walk(lib_lst, library, character.only = TRUE))
+rm(lib_lst)
+
+# functions ####################################################################
+
+# variable #####################################################################
+source("config.R")
+#devtools::install_github("frvirard/signatR", auth_token = token)
+#devtools::install_github("frvirard/phenotypeR", auth_token = token)
+```
+
+
+
+
+```{r}
+project <- dir(file.path(data_dr, "/sigprofiler/matrix"))|>
+  str_subset("LICA-FR_LIRI-JP_TCGA-LIHC")
+
+dir_lst <- dir(file.path(data_dr, "sigprofiler/matrix", 
+                           project,"output/simulations/"))|>
+    str_subset("simulations")|>
+    str_subset("384")
+  
+if(length(dir_lst) == 0){
+  signatR::sigpro_sim(project = project,
+                      project_path = file.path(data_dr, 
+                                               "sigprofiler/matrix",
+                                               project),
+                      genome = "GRCh37",
+                      contexts = list("384"), 
+                      chrom_based = TRUE,
+                      sim = 100)
+}else{
+  message("simulation folder \"", dir_lst,"\" detected, skipping ...")
+}
+
+```
+

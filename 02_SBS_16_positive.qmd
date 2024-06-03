@@ -25,9 +25,14 @@ rm(lib_lst)
 # variable #####################################################################
 biospecimen_id <- vroom::vroom(file.path(data_dr, "biospecimen_id.txt"),
                                show_col_types = FALSE)
+
+project_pal <- c("LICA-FR" = "#FFCA3A","LIRI-JP" = "#1982C4","TCGA-LIHC" = "#6A4C93")
 ```
 
 Identify SBS16 positive samples
+
+# TCGA-LIHC
+I started with TCGA-LIHC project, which is a WXS
 
 ## solution selection
 I imported all stats.
@@ -127,6 +132,30 @@ signatR::sigpro_import_sign(project,
   rename(cluster = project)|>
   signatR::sign_dotplot()
 ```
+```{r}
+activity <- signatR::sigpro_import_sign("simple_somatic_mutation.LICA-FR_LIRI-JP_TCGA-LIHC.gz",
+                            type = "activity", 
+                            n_sign = "suggested", 
+                            analysis = "denovo", 
+                            context = "SBS288")|>
+  pivot_longer(-sample, names_to = "signature", values_to = "count")|>
+  group_by(sample)|>
+  mutate(count = count/sum(count))|>
+  pivot_wider(names_from = "signature", values_from = "count")|>
+  column_to_rownames("sample")
+
+sample_dt <- tibble(id = rownames(activity))|>
+  mutate(sample = if_else(str_detect(id, "TCGA"), str_sub(id, 1,16), id))|>
+  left_join(biospecimen_id)|>
+  select(id, project)|>
+  distinct()
+
+top_anno <- ComplexHeatmap::columnAnnotation(project = sample_dt$project,
+                                             col = list(project = project_pal))
+
+ComplexHeatmap::Heatmap(t(activity),
+                        show_column_names = FALSE, top_annotation = top_anno)
+```
 
 
 ```{r}
@@ -163,4 +192,16 @@ sbs16_pos|>
   ylab("nbr of sample")
 ```
 
+```{r}
+sbs16_pos|>
+  ggplot(aes(SBS16, fill = project))+
+  geom_bar()+
+  theme_classic()+
+  theme(axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        aspect.ratio = 1.5)+
+  scale_fill_manual(values = c("grey90","brown4"))+
+  scale_y_continuous(expand = c(0,0))+
+  ylab("nbr of sample")
+```
 
