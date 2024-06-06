@@ -21,8 +21,12 @@ rm(lib_lst)
 
 # variable #####################################################################
 source("config.R")
-devtools::install_github("frvirard/signatR", auth_token = token, upgrade = "never")
-devtools::install_github("frvirard/phenotypeR", auth_token = token, upgrade = "never")
+devtools::install_github("frvirard/signatR",
+                         auth_token = token, 
+                         upgrade = "never")
+devtools::install_github("frvirard/phenotypeR", 
+                         auth_token = token, 
+                         upgrade = "never")
 ```
 
 ```{r create simulation}
@@ -49,7 +53,19 @@ if(length(dir_lst) == 0){
 ```
 
 ```{r create annotated maf}
-phenotypeR::
+phenotypeR::annotate_maf(input = "1.maf",
+                         annot = "refGene",ref_genome = "hg19", 
+                         output_dr = file.path(data_dr, "maf"),
+                         input_dr = file.path(data_dr, "sigprofiler", "matrix",
+                                           project, "output", 
+                                           "simulations",
+                                           paste0(project, "_simulations_GRCh37_384")),
+                         col_select = c(Chr = "Chrom", 
+                                        Start = "Start_position", 
+                                        End = "End_position", 
+                                        Ref = "Reference_Allele", 
+                                        Alt = "Tumor_Seq_Allele2"), 
+                         annovar_tool = "/Users/francoisvirard/Documents/Code/annovar")
   
 ```
 
