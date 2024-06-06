@@ -21,14 +21,11 @@ rm(lib_lst)
 
 # variable #####################################################################
 source("config.R")
-#devtools::install_github("frvirard/signatR", auth_token = token)
-#devtools::install_github("frvirard/phenotypeR", auth_token = token)
+devtools::install_github("frvirard/signatR", auth_token = token, upgrade = "never")
+devtools::install_github("frvirard/phenotypeR", auth_token = token, upgrade = "never")
 ```
 
-
-
-
-```{r}
+```{r create simulation}
 project <- dir(file.path(data_dr, "/sigprofiler/matrix"))|>
   str_subset("LICA-FR_LIRI-JP_TCGA-LIHC")
 
@@ -49,6 +46,10 @@ if(length(dir_lst) == 0){
 }else{
   message("simulation folder \"", dir_lst,"\" detected, skipping ...")
 }
+```
 
+```{r create annotated maf}
+phenotypeR::
+  
 ```
 
