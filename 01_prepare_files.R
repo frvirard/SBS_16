@@ -2,6 +2,7 @@
 # library ######################################################################
 lib_lst <- c("dplyr",
              "purrr",
+             "readr",
              "stringr",
              "reticulate")
 
@@ -11,13 +12,15 @@ rm(lib_lst)
 # functions ####################################################################
 # variable #####################################################################
 source("config.R")
-remotes::install_github("frvirard/signatR", auth_token = token)
-remotes::install_github("frvirard/datascrapR", auth_token = token)
+remotes::install_github("frvirard/signatR", auth_token = token, upgrade = "never")
+remotes::install_github("frvirard/datascrapR", auth_token = token, upgrade = "never")
+remotes::install_github("frvirard/phenotypeR", auth_token = token, upgrade = "never")
 
 maf_dr <- file.path(data_dr, "maf")
 expr_dr <- file.path(data_dr, "expr")
 
-### Download TCGA-LIHC from GDC ------------------------------------------------
+### TCGA-LIHC ------------------------------------------------------------------
+#" download files
 #' I downloaded mutations files from GDC (20240128)
 dataset <- "TCGA-LIHC"
 manifest <- datascrapR::gdc_download(project = dataset,
@@ -60,12 +63,13 @@ list.files(file.path(maf_dr),
                       pattern = ".maf.gz",
                       full.names = TRUE)|>
   str_subset("TCGA-LIHC")|>
+  str_subset("LICA-FR_LIRI-JP_TCGA-LIHC", negate = TRUE)|>
   walk(signatR::sigpro_matrix,
      matrix_path = file.path(data_dr, "sigprofiler/matrix"),
-     col = col_select, clean = TRUE)
+     col = col_select, clean = FALSE)
 
-### LICA-FR and LIRI-JP from ICGC ----------------------------------------------
-#' release 28 (downloaded 20240202)
+### LICA-FR and LIRI-JP --------------------------------------------------------
+#' release 28 (downloaded 20240202) from ICGC
 #' warning a correction in November 26, 2019 was uploaded on ICGC for
 #' LICA-FR expression files
 dataset_lst <- c("LICA-FR", "LIRI-JP")
@@ -80,8 +84,20 @@ walk(dataset_lst, function(dataset){
   message("Done")
 })
 
-# All set ----------------------------------------------------------------------
-dataset_lst <- c("LICA-FR", "LIRI-JP", "TCGA-LIHC")
+### CLCA_HCC -------------------------------------------------------------------
+#' data from CLCA paper (PMID: 38355797) were provided by the authors
+#' downloaded 20240402
+dataset <- "CLCA_HCC"
+vroom::vroom(file.path(file_dr, "CLCA_HCC", "CLCA_HCC_494.vcf"),
+                   show_col_types = FALSE)|>
+  mutate(project = dataset,
+         assembly_version = "GRCh38", .after = 1)|>
+  vroom::vroom_write(file.path(data_dr, "maf",
+                               paste0("simple_somatic_mutation.open.",
+                                      dataset, ".maf.gz")))
+
+### All set --------------------------------------------------------------------
+dataset_lst <- c("LICA-FR", "LIRI-JP", "TCGA-LIHC", "CLCA_HCC")
 col_names <- c("Project", "Sample", "Genome", "chrom", "pos_start", "pos_end", "ref", "alt")
 tcga_col <- c("project",
               "Tumor_Sample_Barcode",
@@ -101,9 +117,19 @@ icgc_col <- c("project_code",
               "mutated_from_allele",
               "mutated_to_allele")
 
+clca_col <- c("project",
+              "Sample",
+              "assembly_version",
+              "Chr",
+              "Start",
+              "End",
+              "Ref",
+              "Alt")
+
 rename_lst <- list('TCGA-LIHC' = tcga_col,
                    'LICA-FR' = icgc_col,
-                   'LIRI-JP' = icgc_col)
+                   'LIRI-JP' = icgc_col,
+                   'CLCA_HCC' = clca_col)
 
 rename_lst <- map(rename_lst, function(x){
   names(x) <- col_names
@@ -121,13 +147,14 @@ if(!file.exists(output)){
     dt <- list.files(file.path(maf_dr),
                pattern = ".maf.gz",
                full.names = TRUE)|>
-      str_subset(dataset)|>
+      str_subset(paste0(dataset, ".maf.gz"))|>
       vroom::vroom(show_col_types = FALSE,
                    col_types = readr::cols(.default = "c"),
                    col_select = rename_lst[[dataset]])
 
-    if(dataset == "TCGA-LIHC"){
-      # liftover ---------------------------------------------------------------------
+    convert <- c("TCGA-LIHC", "CLCA_HCC")
+    if(dataset %in% convert){
+      # liftover ---------------------------------------------------------------
       message("converting to GRCh37 genome ...")
       chain <- rtracklayer::import.chain(file.path(file_dr,"hg38ToHg19.over.chain"))
 
@@ -146,6 +173,9 @@ if(!file.exists(output)){
 
       message("done")
     }
+    dt <- dt|>
+      dplyr::distinct()
+
     return(dt)
   })|>
     readr::type_convert()|>
@@ -154,11 +184,66 @@ if(!file.exists(output)){
   message(output, " already exists, skipping")
 }
 
+# Add annotation to all set ----------------------------------------------------
+# Note that insertion have been removed during the process
+# doesn't understand why there is duplicated lines
+file_lst <- list.files(file.path(data_dr, "maf"), pattern = "maf")|>
+  str_subset("simple_somatic_mutation.LICA-FR_LIRI-JP_TCGA-LIHC.maf.gz")|>
+  str_subset("anno", negate = TRUE)
+
+walk(file_lst, function(file){
+  prf <- str_remove(file, ".maf")|>
+    str_remove(".gz")
+  output <- file.path(data_dr, "maf", paste0(prf, "_anno.maf.gz"))
+
+  if(file.exists(output)){
+    message(basename(output), " file already present, skipping ...")
+  }else{
+    message("- creating annotation for ",basename(output))
+    tmp_file <- paste0(prf, ".tmp")
+    multianno_file <- paste0(prf, ".hg19_multianno.txt")
+
+    # create a temp file
+    vroom::vroom(file.path(data_dr, "maf", file),
+                 col_select = c(chrom, pos_start, pos_end, ref, alt),
+                 show_col_types = FALSE)|>
+      vroom::vroom_write(file.path(data_dr, "maf", tmp_file), col_names = FALSE)
+
+    # run annovar
+    phenotypeR::run_annovar(input = tmp_file,
+                genome = "hg19",
+                db = "ensGene",
+                op = "g",
+                prefix = prf,
+                annovar_tool = "/Users/francoisvirard/Documents/Code/annovar",
+                path = file.path(data_dr, "maf"))
+
+    # merge result
+    init <- vroom::vroom(file.path(data_dr, "maf", file), show_col_types = FALSE,
+                         col_types = cols(.default = col_character()))|>
+      rename(Chr = chrom, Start = pos_start, End = pos_end, Ref = ref, Alt = alt)
+
+    multi_annot <- vroom::vroom(file.path(data_dr, "maf", multianno_file),
+                                show_col_types = FALSE,
+                                col_types = cols(.default = col_character()))
+
+    init |>
+      left_join(multi_annot, relationship = "many-to-many",
+                by = join_by(Chr, Start, End, Ref, Alt))|>
+      vroom::vroom_write(output)
+
+    # clean
+    unlink(file.path(data_dr, "maf", multianno_file))
+    unlink(file.path(data_dr, "maf", tmp_file))
+    unlink(file.path(data_dr, "maf", paste0(prf, ".log")))
+  }
+})
+
 # create matrix ----------------------------------------------------------------
 names(col_names) <- col_names
 signatR::sigpro_matrix(output,
                        matrix_path = file.path(data_dr, "sigprofiler/matrix"),
-                       col = col_names, clean = TRUE)
+                       col = col_names, clean = FALSE)
 
 ### extract signatures ---------------------------------------------------------
 context_lst <- c("SBS96", "SBS288", "SBS384", "SBS1536")
